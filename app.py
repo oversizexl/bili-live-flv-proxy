@@ -107,8 +107,10 @@ async def index(request: Request):
         f'<span class="room-label">Room {r["id"]}</span>'
         f'<span class="room-status {"online" if r["online"] else "offline"}">{"ONLINE" if r["online"] else "OFFLINE"}</span>'
         f'</div>'
-        f'<div class="url-box" id="url-{r["id"]}"></div></div>'
+        f'<div class="url-row">'
+        f'<div class="url-box" id="url-{r["id"]}"></div>'
         f'<button class="copy-btn" data-rid="{r["id"]}">Copy</button>'
+        f'</div></div>'
         f'</div>'
         for r in rooms_status
     ])
@@ -176,7 +178,7 @@ async def index(request: Request):
   }}
   .room-row {{
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 12px;
     background: #0d1117;
     border: 1px solid #1a1f2b;
@@ -230,6 +232,12 @@ async def index(request: Request):
     color: #ef4444;
     background: #ef444414;
   }}
+  .url-row {{
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    margin-top: 6px;
+  }}
   .url-box {{
     font-family: 'JetBrains Mono', 'SF Mono', monospace;
     font-size: 11.5px;
@@ -242,6 +250,8 @@ async def index(request: Request):
     word-break: break-all;
     user-select: all;
     line-height: 1.5;
+    flex: 1;
+    min-width: 0;
   }}
   .copy-btn {{
     font-family: 'Outfit', sans-serif;
@@ -298,7 +308,7 @@ async def index(request: Request):
 </div>
 <script>
 (function() {{
-  document.querySelectorAll('.room-row').forEach(row => {{
+  document.querySelectorAll('.url-row').forEach(row => {{
     const urlBox = row.querySelector('.url-box');
     const btn = row.querySelector('.copy-btn');
     const rid = btn.dataset.rid;
