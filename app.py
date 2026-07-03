@@ -102,7 +102,7 @@ async def index(request: Request):
     room_rows = "".join([
         f'<div class="room-row"><span class="room-dot" style="background:{"#22c55e" if r["online"] else "#ef4444"}"></span>'
         f'Room {r["id"]} · {"ONLINE" if r["online"] else "OFFLINE"}'
-        f'<div class="url-box">{request.base_url}live/{r["id"]}.flv</div></div>'
+        f'<div class="url-box" id="url-{r["id"]}"></div></div>'
         for r in rooms_status
     ])
 
@@ -195,6 +195,12 @@ async def index(request: Request):
     Auto-refreshes CDN signature every {CACHE_TTL//60} min.
   </div>
 </div>
+<script>
+  document.querySelectorAll('.url-box').forEach(el => {{
+    const rid = el.id.replace('url-','');
+    el.textContent = window.location.origin + '/live/' + rid + '.flv';
+  }});
+</script>
 </body>
 </html>"""
 
