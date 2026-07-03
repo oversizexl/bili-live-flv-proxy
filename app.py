@@ -198,7 +198,20 @@ async def index(request: Request):
 <script>
   document.querySelectorAll('.url-box').forEach(el => {{
     const rid = el.id.replace('url-','');
-    el.textContent = window.location.origin + '/live/' + rid + '.flv';
+    const origin = window.location.origin;
+    const path = '/live/' + rid + '.flv';
+    const fullUrl = origin + path;
+    el.textContent = fullUrl;
+
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    btn.onclick = () => {{
+      navigator.clipboard.writeText(fullUrl);
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 2000);
+    }};
+    el.parentElement.appendChild(btn);
   }});
 </script>
 </body>
