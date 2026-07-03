@@ -24,13 +24,51 @@ https://your-space.hf.space/live/27519423.flv
 | `DEFAULT_QN` | `10000` | 画质 (10000=原画 400=蓝光 250=超清) |
 | `PORT` | `7860` | 监听端口 |
 
-## 部署到 Hugging Face
+## 部署
+
+### Docker
+
+```bash
+# 构建镜像
+docker build -t bili-live-flv-proxy .
+
+# 运行容器
+docker run -d --name bili-live-proxy -p 7860:7860 -e ROOM_ID=27519423 bili-live-flv-proxy
+
+# 查看日志
+docker logs -f bili-live-proxy
+```
+
+定制直播间和画质：
+
+```bash
+docker run -d --name bili-live-proxy -p 7860:7860 \
+  -e ROOM_ID=27519423 \
+  -e DEFAULT_QN=10000 \
+  bili-live-flv-proxy
+```
+
+### Docker Compose
+
+```yaml
+services:
+  bili-proxy:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      - ROOM_ID=27519423
+      - DEFAULT_QN=10000
+    restart: unless-stopped
+```
+
+### Hugging Face
 
 1. Fork 本仓库
 2. 在 HF 创建 Space，选 Docker SDK，关联仓库
 3. 构建完成后即可使用
 
-或本地运行：
+### 本地运行
 
 ```bash
 pip install -r requirements.txt
