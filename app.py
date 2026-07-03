@@ -18,7 +18,8 @@ from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
 import uvicorn
 
 PORT = int(os.environ.get("PORT", 7860))
-ROOM_ID = int(os.environ.get("ROOM_ID", 27519423))
+_room_ids_env = os.environ.get("ROOM_IDS", os.environ.get("ROOM_ID", "27519423"))
+ROOM_IDS = [int(x.strip()) for x in _room_ids_env.split(",") if x.strip()]
 DEFAULT_QN = int(os.environ.get("DEFAULT_QN", 80))
 CACHE_TTL = 3000  # 50 分钟
 
@@ -88,10 +89,22 @@ def get_cached_url(room_id: int) -> str | None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    room_id = ROOM_ID
-    cached = get_cached_url(room_id)
-    status = "ONLINE" if cached else "OFFLINE"
-    proxy_url = f"{request.base_url}live/{room_id}.flv"
+    rooms_status = []
+    all_online = True
+    for rid in ROOM_IDS:
+        url = get_cached_url(rid)
+        rooms_status.append({"id": rid, "online": url is not None})
+        if url is None:
+            all_online = False
+    status = "ALL ONLINE" if all_online else "SOME OFFLINE"
+    status_color = "#22c55e" if all_online else "#f59e0b"
+
+    room_rows = "".join([
+        f'<div class="room-row"><span class="room-dot" style="background:{"#22c55e" if r["online"] else "#ef4444"}"></span>'
+        f'Room {r["id"]} · {"ONLINE" if r["online"] else "OFFLINE"}'
+        f'<div class="url-box">{request.base_url}live/{r["id"]}.flv</div></div>'
+        for r in rooms_status
+    ])
 
     return f"""<!DOCTYPE html>
 <html lang="zh">
@@ -115,28 +128,45 @@ async def index(request: Request):
     border: 1px solid #1e2a3a;
     border-radius: 16px;
     padding: 40px;
-    max-width: 520px;
+    max-width: 600px;
     width: 90%;
     text-align: center;
   }}
   h1 {{ font-size: 20px; font-weight: 700; margin-bottom: 8px; }}
-  .status {{
+  .status-badge {{
     display: inline-block;
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    margin-right: 6px;
-    background: {"#22c55e" if cached else "#ef4444"};
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    background: {status_color}22;
+    color: {status_color};
+    border: 1px solid {status_color}44;
+    margin-bottom: 20px;
   }}
-  .url-box {{
+  .room-row {{
     background: #0a0f18;
     border: 1px solid #1e2a3a;
     border-radius: 10px;
     padding: 14px 16px;
-    margin: 20px 0;
-    font-family: 'SF Mono', 'Fira Code', monospace;
+    margin: 10px 0;
+    text-align: left;
     font-size: 13px;
-    word-break: break-all;
+    color: #6b7280;
+  }}
+  .room-dot {{
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+  }}
+  .url-box {{
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    margin-top: 8px;
     color: #a0c4ff;
+    word-break: break-all;
     user-select: all;
   }}
   .copy-btn {{
@@ -147,25 +177,22 @@ async def index(request: Request):
     padding: 10px 24px;
     font-size: 14px;
     cursor: pointer;
-    margin-bottom: 16px;
+    margin-top: 16px;
     transition: background .2s;
   }}
   .copy-btn:hover {{ background: #2a3a4a; }}
-  .info {{ font-size: 12px; color: #6b7280; line-height: 1.6; }}
+  .info {{ font-size: 12px; color: #6b7280; line-height: 1.6; margin-top: 16px; }}
   a {{ color: #a0c4ff; }}
 </style>
 </head>
 <body>
 <div class="card">
-  <h1><span class="status"></span>Bilibili Live FLV Proxy</h1>
-  <p style="color:#6b7280;font-size:13px;">Room {room_id} · {status}</p>
-  <div class="url-box" id="url">{proxy_url}</div>
-  <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('url').textContent);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy URL',2000)">Copy URL</button>
+  <h1>Bilibili Live FLV Proxy</h1>
+  <div class="status-badge">{status}</div>
+  {room_rows}
   <div class="info">
-    Add this URL to your radio app.<br>
+    Add these URLs to your radio app.<br>
     Auto-refreshes CDN signature every {CACHE_TTL//60} min.
-    <br><br>
-    <a href="/live/{room_id}.flv" target="_blank">Open FLV stream →</a>
   </div>
 </div>
 </body>
@@ -210,7 +237,7 @@ async def proxy_flv(room_id: int):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "room": ROOM_ID}
+    return {"status": "ok", "rooms": ROOM_IDS}
 
 
 if __name__ == "__main__":
