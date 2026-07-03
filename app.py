@@ -19,7 +19,7 @@ import uvicorn
 
 PORT = int(os.environ.get("PORT", 7860))
 ROOM_ID = int(os.environ.get("ROOM_ID", 27519423))
-DEFAULT_QN = int(os.environ.get("DEFAULT_QN", 10000))
+DEFAULT_QN = int(os.environ.get("DEFAULT_QN", 80))
 CACHE_TTL = 3000  # 50 分钟
 
 API_URL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"

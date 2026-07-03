@@ -19,7 +19,7 @@ import urllib.parse
 
 PORT = 8765
 ROOM_ID = 27519423
-DEFAULT_QN = 10000  # 原画
+DEFAULT_QN = 80  # 流畅
 API_URL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
 HEADERS = {
     "User-Agent": (

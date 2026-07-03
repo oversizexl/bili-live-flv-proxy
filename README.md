@@ -21,7 +21,7 @@ https://your-space.hf.space/live/27519423.flv
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
 | `ROOM_ID` | `27519423` | Bilibili 直播间 ID |
-| `DEFAULT_QN` | `10000` | 画质 (10000=原画 400=蓝光 250=超清) |
+| `DEFAULT_QN` | `80` | 画质 (80=流畅 150=高清 250=超清 400=蓝光 10000=原画) |
 | `PORT` | `7860` | 监听端口 |
 
 ## 部署
@@ -58,7 +58,7 @@ services:
       - "7860:7860"
     environment:
       - ROOM_ID=27519423
-      - DEFAULT_QN=10000
+      - DEFAULT_QN=80
     restart: unless-stopped
 ```
 
