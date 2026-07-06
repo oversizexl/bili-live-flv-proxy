@@ -89,31 +89,8 @@ def get_cached_url(room_id: int) -> str | None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    rooms_status = []
-    all_online = True
-    for rid in ROOM_IDS:
-        url = get_cached_url(rid)
-        rooms_status.append({"id": rid, "online": url is not None})
-        if url is None:
-            all_online = False
-    status = "ALL ONLINE" if all_online else "SOME OFFLINE"
-    status_color = "#22c55e" if all_online else "#f59e0b"
-    status_icon = "&#9679;" if all_online else "&#9679;"
-
-    room_rows = "".join([
-        f'<div class="room-row">'
-        f'<div class="room-info">'
-        f'<div class="room-header"><span class="room-dot" style="background:{"#22c55e" if r["online"] else "#ef4444"}"></span>'
-        f'<span class="room-label">Room {r["id"]}</span>'
-        f'<span class="room-status {"online" if r["online"] else "offline"}">{"ONLINE" if r["online"] else "OFFLINE"}</span>'
-        f'</div>'
-        f'<div class="url-row">'
-        f'<div class="url-box" id="url-{r["id"]}"></div>'
-        f'<button class="copy-btn" data-rid="{r["id"]}">Copy</button>'
-        f'</div></div>'
-        f'</div>'
-        for r in rooms_status
-    ])
+    # 服务端环境变量作为初始种子，但前端可以自行添加删除房间
+    server_rooms = ROOM_IDS
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -155,6 +132,12 @@ async def index(request: Request):
     color: #e6edf3;
     margin-bottom: 10px;
   }}
+  .badge-row {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }}
   .status-badge {{
     display: inline-flex;
     align-items: center;
@@ -165,21 +148,90 @@ async def index(request: Request):
     font-weight: 500;
     letter-spacing: 0.8px;
     text-transform: uppercase;
-    background: {status_color}15;
-    color: {status_color};
-    border: 1px solid {status_color}30;
   }}
   .status-badge::before {{
     content: '';
     width: 6px; height: 6px;
     border-radius: 50%;
-    background: {status_color};
-    box-shadow: 0 0 6px {status_color}80;
+  }}
+  .status-badge.live {{
+    background: #22c55e15;
+    color: #22c55e;
+    border: 1px solid #22c55e30;
+  }}
+  .status-badge.live::before {{
+    background: #22c55e;
+    box-shadow: 0 0 6px #22c55e80;
+  }}
+  .status-badge.some-offline {{
+    background: #f59e0b15;
+    color: #f59e0b;
+    border: 1px solid #f59e0b30;
+  }}
+  .status-badge.some-offline::before {{
+    background: #f59e0b;
+    box-shadow: 0 0 6px #f59e0b80;
+  }}
+  .status-badge.all-offline {{
+    background: #ef444415;
+    color: #ef4444;
+    border: 1px solid #ef444430;
+  }}
+  .status-badge.all-offline::before {{
+    background: #ef4444;
+    box-shadow: 0 0 6px #ef444480;
+  }}
+  .add-row {{
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }}
+  .add-input {{
+    flex: 1;
+    font-family: 'JetBrains Mono', 'Outfit', monospace;
+    font-size: 13px;
+    padding: 10px 14px;
+    background: #0a0e14;
+    border: 1px solid #1a1f2b;
+    border-radius: 8px;
+    color: #e6edf3;
+    outline: none;
+    transition: border-color 0.2s;
+  }}
+  .add-input::placeholder {{
+    color: #484f58;
+  }}
+  .add-input:focus {{
+    border-color: #58a6ff;
+  }}
+  .add-btn {{
+    font-family: 'Outfit', sans-serif;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    background: #238636;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.18s;
+  }}
+  .add-btn:hover {{
+    background: #2ea043;
+  }}
+  .add-btn:disabled {{
+    background: #1a2a1e;
+    color: #484f58;
+    cursor: not-allowed;
+  }}
+  .room-list {{
+    margin-bottom: 4px;
   }}
   .room-row {{
     display: flex;
-    align-items: flex-start;
-    gap: 12px;
+    flex-direction: column;
+    gap: 6px;
     background: #0d1117;
     border: 1px solid #1a1f2b;
     border-radius: 12px;
@@ -190,31 +242,29 @@ async def index(request: Request):
   .room-row:hover {{
     border-color: #2a3344;
   }}
-  .room-info {{
-    flex: 1;
-    min-width: 0;
-  }}
   .room-header {{
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 6px;
   }}
   .room-dot {{
     width: 8px; height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
   }}
-  .room-dot[style*="22c55e"] {{
+  .room-dot.online {{
+    background: #22c55e;
     box-shadow: 0 0 6px #22c55e60;
   }}
-  .room-dot[style*="ef4444"] {{
+  .room-dot.offline {{
+    background: #ef4444;
     box-shadow: 0 0 6px #ef444460;
   }}
   .room-label {{
     font-size: 14px;
     font-weight: 600;
     color: #e6edf3;
+    flex: 1;
   }}
   .room-status {{
     font-size: 10px;
@@ -232,11 +282,26 @@ async def index(request: Request):
     color: #ef4444;
     background: #ef444414;
   }}
+  .room-del {{
+    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    padding: 4px 10px;
+    background: transparent;
+    color: #484f58;
+    border: 1px solid #1a1f2b;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.18s;
+  }}
+  .room-del:hover {{
+    color: #ef4444;
+    border-color: #ef444450;
+    background: #ef444410;
+  }}
   .url-row {{
     display: flex;
     align-items: stretch;
     gap: 8px;
-    margin-top: 6px;
   }}
   .url-box {{
     font-family: 'JetBrains Mono', 'SF Mono', monospace;
@@ -281,16 +346,17 @@ async def index(request: Request):
     color: #22c55e;
     border-color: #22c55e40;
   }}
-  .copy-btn svg {{
-    width: 14px; height: 14px;
-    opacity: 0.7;
-    flex-shrink: 0;
+  .empty-hint {{
+    text-align: center;
+    font-size: 13px;
+    color: #343942;
+    padding: 20px 0;
   }}
   .info {{
     text-align: center;
     font-size: 11px;
     color: #484f58;
-    margin-top: 20px;
+    margin-top: 16px;
     line-height: 1.7;
   }}
 </style>
@@ -299,33 +365,166 @@ async def index(request: Request):
 <div class="card">
   <div class="header">
     <h1>Bilibili Live FLV Proxy</h1>
-    <div class="status-badge">{status}</div>
+    <div class="badge-row">
+      <div class="status-badge live" id="status-badge">LOADING</div>
+    </div>
   </div>
-  {room_rows}
+  <div class="add-row">
+    <input class="add-input" id="add-input" type="number" placeholder="Enter Bilibili room ID..." min="1" max="999999999">
+    <button class="add-btn" id="add-btn">Add Room</button>
+  </div>
+  <div class="room-list" id="room-list">
+    <div class="empty-hint">Loading rooms...</div>
+  </div>
   <div class="info">
-    Add these URLs to your radio app &middot; CDN signature auto-refreshes every {CACHE_TTL//60} min
+    CDN signature auto-refreshes every {CACHE_TTL//60} min &middot; Rooms saved in your browser
   </div>
 </div>
 <script>
 (function() {{
-  document.querySelectorAll('.url-row').forEach(row => {{
-    const urlBox = row.querySelector('.url-box');
-    const btn = row.querySelector('.copy-btn');
-    const rid = btn.dataset.rid;
-    const fullUrl = window.location.origin + '/live/' + rid + '.flv';
-    urlBox.textContent = fullUrl;
+  const STORAGE_KEY = 'bili_rooms';
+  const SERVER_SEEDS = {json.dumps(server_rooms)};
 
-    btn.addEventListener('click', () => {{
-      navigator.clipboard.writeText(fullUrl).then(() => {{
-        btn.textContent = 'Copied';
-        btn.classList.add('copied');
-        setTimeout(() => {{
-          btn.textContent = 'Copy';
-          btn.classList.remove('copied');
-        }}, 1800);
+  function loadRooms() {{
+    let ids = [];
+    try {{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      ids = raw ? JSON.parse(raw) : [];
+    }} catch(e) {{}}
+    if (!Array.isArray(ids) || ids.length === 0) {{
+      ids = SERVER_SEEDS;
+    }}
+    return [...new Set(ids.filter(id => Number.isInteger(id) && id > 0))];
+  }}
+
+  function saveRooms(ids) {{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
+  }}
+
+  function buildUrl(rid) {{
+    return window.location.origin + '/live/' + rid + '.flv';
+  }}
+
+  function render() {{
+    const ids = loadRooms();
+    const list = document.getElementById('room-list');
+    const badge = document.getElementById('status-badge');
+
+    if (ids.length === 0) {{
+      list.innerHTML = '<div class="empty-hint">No rooms added yet. Enter a room ID above.</div>';
+      badge.textContent = 'NO ROOMS';
+      badge.className = 'status-badge all-offline';
+      return;
+    }}
+
+    list.innerHTML = ids.map(rid => {{
+      return '<div class="room-row" data-rid="' + rid + '">'
+        + '<div class="room-header">'
+        + '<span class="room-dot" id="dot-' + rid + '"></span>'
+        + '<span class="room-label">Room ' + rid + '</span>'
+        + '<span class="room-status" id="st-' + rid + '">...</span>'
+        + '<button class="room-del" data-rid="' + rid + '">Remove</button>'
+        + '</div>'
+        + '<div class="url-row">'
+        + '<div class="url-box">' + buildUrl(rid) + '</div>'
+        + '<button class="copy-btn" data-rid="' + rid + '">Copy</button>'
+        + '</div>'
+        + '</div>';
+    }}).join('');
+
+    // Copy buttons
+    list.querySelectorAll('.copy-btn').forEach(btn => {{
+      btn.addEventListener('click', () => {{
+        const rid = btn.dataset.rid;
+        navigator.clipboard.writeText(buildUrl(rid)).then(() => {{
+          btn.textContent = 'Copied';
+          btn.classList.add('copied');
+          setTimeout(() => {{
+            btn.textContent = 'Copy';
+            btn.classList.remove('copied');
+          }}, 1800);
+        }});
       }});
     }});
+
+    // Delete buttons
+    list.querySelectorAll('.room-del').forEach(btn => {{
+      btn.addEventListener('click', () => {{
+        const rid = Number(btn.dataset.rid);
+        const ids = loadRooms().filter(id => id !== rid);
+        saveRooms(ids);
+        render();
+      }});
+    }});
+
+    // Check live status
+    updateStatuses();
+  }}
+
+  async function updateStatuses() {{
+    const ids = loadRooms();
+    let online = 0;
+    let offline = 0;
+
+    for (const rid of ids) {{
+      const dot = document.getElementById('dot-' + rid);
+      const st = document.getElementById('st-' + rid);
+      if (!dot || !st) continue;
+
+      try {{
+        const resp = await fetch('/live/' + rid + '.flv', {{ method: 'HEAD' }});
+        if (resp.ok) {{
+          dot.className = 'room-dot online';
+          st.textContent = 'ONLINE';
+          st.className = 'room-status online';
+          online++;
+        }} else {{
+          throw new Error();
+        }}
+      }} catch(e) {{
+        dot.className = 'room-dot offline';
+        st.textContent = 'OFFLINE';
+        st.className = 'room-status offline';
+        offline++;
+      }}
+    }}
+
+    const badge = document.getElementById('status-badge');
+    if (online > 0 && offline === 0) {{
+      badge.textContent = 'ALL ONLINE';
+      badge.className = 'status-badge live';
+    }} else if (online > 0) {{
+      badge.textContent = 'SOME OFFLINE';
+      badge.className = 'status-badge some-offline';
+    }} else if (ids.length > 0) {{
+      badge.textContent = 'ALL OFFLINE';
+      badge.className = 'status-badge all-offline';
+    }}
+  }}
+
+  // Add room
+  document.getElementById('add-btn').addEventListener('click', () => {{
+    const input = document.getElementById('add-input');
+    const val = parseInt(input.value, 10);
+    if (!val || val < 1) return;
+    const ids = loadRooms();
+    if (ids.includes(val)) {{
+      input.value = '';
+      input.placeholder = 'Already added';
+      setTimeout(() => input.placeholder = 'Enter Bilibili room ID...', 1500);
+      return;
+    }}
+    ids.push(val);
+    saveRooms(ids);
+    input.value = '';
+    render();
   }});
+
+  document.getElementById('add-input').addEventListener('keydown', (e) => {{
+    if (e.key === 'Enter') document.getElementById('add-btn').click();
+  }});
+
+  render();
 }})();
 </script>
 </body>
