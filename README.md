@@ -1,4 +1,4 @@
-<img width="1298" height="1310" alt="image" src="https://github.com/user-attachments/assets/a2e883ac-2dff-4b06-8e07-66ba45f782d5" />
+<img width="1284" height="548" alt="image" src="https://github.com/user-attachments/assets/9458a61c-d0a0-4307-a8dd-93608f2b0aa8" />
 
 
 # Bilibili Live FLV Proxy
