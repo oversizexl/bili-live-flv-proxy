@@ -1,3 +1,6 @@
+<img width="1488" height="1468" alt="image" src="https://github.com/user-attachments/assets/77766beb-dba3-424b-90e1-71d8eb34d131" />
+
+
 # Bilibili Live FLV Proxy
 
 把 Bilibili 直播间转成固定 FLV 直链。无需登录、无需 Cookie，自动处理 CDN 签名刷新。
