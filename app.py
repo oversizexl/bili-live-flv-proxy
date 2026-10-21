@@ -41,13 +41,15 @@ logger.setLevel(logging.INFO)
 
 _cache = {}
 _url_locks = {}
+_room_state = {}
+_last_error_log = {}
 # 每次读取都会占用一个线程直到有数据返回，独立线程池避免和其他请求互相排队
 _io_executor = ThreadPoolExecutor(max_workers=64, thread_name_prefix="flv-io")
 
 app = FastAPI(title="Bilibili Live FLV Proxy")
 
 
-def fetch_flv_url(room_id: int, qn: int = DEFAULT_QN) -> str | None:
+def fetch_flv_url(room_id: int, qn: int = DEFAULT_QN) -> tuple[str | None, int | None]:
     params = urllib.parse.urlencode({
         "room_id": room_id,
         "protocol": "0,1",
@@ -59,9 +61,11 @@ def fetch_flv_url(room_id: int, qn: int = DEFAULT_QN) -> str | None:
     })
     req = urllib.request.Request(f"{API_URL}?{params}", headers=HEADERS)
     data = json.loads(urllib.request.urlopen(req, timeout=10).read())
-    playurl = data["data"]["playurl_info"]["playurl"]
+    info = data.get("data") or {}
+    status = info.get("live_status")
+    playurl = (info.get("playurl_info") or {}).get("playurl")
     if playurl is None:
-        return None
+        return None, status
 
     for stream in playurl["stream"]:
         if stream["protocol_name"] != "http_stream":
@@ -73,9 +77,9 @@ def fetch_flv_url(room_id: int, qn: int = DEFAULT_QN) -> str | None:
                 if codec["codec_name"] != "avc":
                     continue
                 if codec["url_info"]:
-                    info = codec["url_info"][0]
-                    return info["host"] + codec["base_url"] + info["extra"]
-    return None
+                    url_info = codec["url_info"][0]
+                    return url_info["host"] + codec["base_url"] + url_info["extra"], status
+    return None, status
 
 
 def _parse_expires(url: str) -> float | None:
@@ -85,6 +89,42 @@ def _parse_expires(url: str) -> float | None:
         return float(value) if value else None
     except (TypeError, ValueError):
         return None
+
+
+def _set_room_state(room_id: int, state: str) -> bool:
+    if _room_state.get(room_id) == state:
+        return False
+    _room_state[room_id] = state
+    return True
+
+
+def _status_text(status: int | None) -> str:
+    return {0: "未开播", 1: "直播中", 2: "轮播"}.get(status, f"未知({status})")
+
+
+def _sig_left_text(url: str) -> str:
+    deadline = _parse_expires(url)
+    if not deadline:
+        return "未知"
+    return f"{max(int(deadline - time.time()), 0) // 60}分"
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}小时{minutes}分"
+    if minutes:
+        return f"{minutes}分{secs}秒"
+    return f"{secs}秒"
+
+
+def _fmt_bytes(count: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if count < 1024 or unit == "TB":
+            return f"{int(count)}B" if unit == "B" else f"{count:.1f}{unit}"
+        count /= 1024
 
 
 async def get_cached_url(room_id: int, force: bool = False) -> str | None:
@@ -103,15 +143,29 @@ async def get_cached_url(room_id: int, force: bool = False) -> str | None:
                 return entry["url"]
 
         loop = asyncio.get_running_loop()
+        status = None
+        fetch_failed = False
         try:
-            url = await loop.run_in_executor(None, fetch_flv_url, room_id)
+            url, status = await loop.run_in_executor(None, fetch_flv_url, room_id)
         except Exception as exc:
-            logger.warning("room %s: fetch play url failed: %s", room_id, exc)
             url = None
+            fetch_failed = True
+            now = time.time()
+            if now - _last_error_log.get(room_id, 0) >= 60:
+                _last_error_log[room_id] = now
+                logger.warning(
+                    "房间=%s 获取播放地址失败 类型=%s 详情=%s",
+                    room_id, type(exc).__name__, exc,
+                )
 
         if url is None:
+            if not fetch_failed and _set_room_state(room_id, "offline"):
+                logger.info("房间=%s 未开播 状态=%s", room_id, _status_text(status))
             entry = _cache.get(room_id)
             return entry["url"] if entry else None
+
+        if _set_room_state(room_id, "live"):
+            logger.info("房间=%s 直播中", room_id)
 
         now = time.time()
         deadline = _parse_expires(url)
@@ -597,6 +651,14 @@ class FlvStream:
     def next_connection(self):
         self._start_connection()
 
+    @property
+    def is_first(self) -> bool:
+        return self._first
+
+    @property
+    def offset(self) -> int | None:
+        return self._offset
+
     def _start_connection(self):
         self._buf = bytearray()
         self._header_done = False
@@ -629,7 +691,7 @@ class FlvStream:
         while len(self._buf) >= 11:
             size = int.from_bytes(self._buf[1:4], "big")
             if size > MAX_TAG_SIZE:
-                logger.warning("bad FLV tag size %d, dropping buffered data", size)
+                logger.warning("FLV tag 大小异常 %d，丢弃缓冲数据", size)
                 self._buf.clear()
                 break
             total = 11 + size + 4
@@ -669,59 +731,112 @@ async def proxy_flv(room_id: int, request: Request):
     if request.method == "HEAD":
         return Response(status_code=200, headers=headers)
 
+    client = request.client.host if request.client else "未知"
+    logger.info(
+        "房间=%s 客户端开始拉流 来源=%s 签名剩余=%s",
+        room_id, client, _sig_left_text(cdn_url),
+    )
+
     async def stream():
         loop = asyncio.get_running_loop()
         url = cdn_url
         flv = FlvStream()
         failures = 0
+        started = time.monotonic()
+        total_bytes = 0
 
-        while True:
-            upstream = None
-            received = False
-            try:
-                upstream = await loop.run_in_executor(
-                    _io_executor, _open_upstream, url
-                )
-                while True:
-                    chunk = await loop.run_in_executor(
-                        _io_executor, upstream.read1, CHUNK_SIZE
-                    )
-                    if not chunk:
-                        break
-                    received = True
-                    data = flv.feed(chunk)
-                    if data:
-                        yield data
-            except Exception as exc:
-                logger.warning("room %s: upstream error: %s", room_id, exc)
-            finally:
-                if upstream is not None:
-                    try:
-                        upstream.close()
-                    except Exception:
-                        pass
-
-            # 上游结束或失败后刷新签名重连，对播放器保持同一个 HTTP 响应不中断
-            if received:
-                failures = 0
-                logger.info("room %s: upstream closed, reconnecting", room_id)
-                await asyncio.sleep(0.5)
-            else:
-                failures += 1
-                logger.warning("room %s: upstream unavailable (attempt %d)", room_id, failures)
-                await asyncio.sleep(min(2 ** failures, 15))
-
-            flv.next_connection()
-
-            attempts = 0
+        try:
             while True:
-                url = await get_cached_url(room_id, force=True)
-                if url:
-                    break
-                attempts += 1
-                if attempts % 12 == 1:
-                    logger.warning("room %s: no playable stream, retrying", room_id)
-                await asyncio.sleep(5)
+                upstream = None
+                received = False
+                error = None
+                resumed = False
+                conn_started = time.monotonic()
+                conn_bytes = 0
+                try:
+                    upstream = await loop.run_in_executor(
+                        _io_executor, _open_upstream, url
+                    )
+                    node = urllib.parse.urlparse(url).netloc
+                    if flv.is_first:
+                        logger.info("房间=%s 上游连接成功 节点=%s", room_id, node)
+                    while True:
+                        chunk = await loop.run_in_executor(
+                            _io_executor, upstream.read1, CHUNK_SIZE
+                        )
+                        if not chunk:
+                            break
+                        received = True
+                        conn_bytes += len(chunk)
+                        data = flv.feed(chunk)
+                        if data:
+                            total_bytes += len(data)
+                            yield data
+                        if not resumed and not flv.is_first and flv.offset is not None:
+                            logger.info(
+                                "房间=%s 重连成功 节点=%s 时间戳偏移=%d毫秒",
+                                room_id, node, flv.offset,
+                            )
+                            resumed = True
+                except Exception as exc:
+                    error = exc
+                finally:
+                    if upstream is not None:
+                        try:
+                            upstream.close()
+                        except Exception:
+                            pass
+
+                # 上游结束或失败后刷新签名重连，对播放器保持同一个 HTTP 响应不中断
+                if received:
+                    if failures:
+                        logger.info("房间=%s 连接已恢复 共尝试=%d次", room_id, failures)
+                    failures = 0
+                    logger.info(
+                        "房间=%s 上游断开 原因=%s 时长=%s 流量=%s",
+                        room_id,
+                        f"异常({type(error).__name__})" if error else "正常结束",
+                        _fmt_duration(time.monotonic() - conn_started),
+                        _fmt_bytes(conn_bytes),
+                    )
+                    await asyncio.sleep(0.5)
+                else:
+                    failures += 1
+                    delay = min(2 ** failures, 15)
+                    if failures == 1 or failures % 5 == 0:
+                        logger.warning(
+                            "房间=%s 上游连接失败 类型=%s 详情=%s 已尝试=%d次 下次重试=%d秒",
+                            room_id,
+                            type(error).__name__ if error else "无数据",
+                            error if error else "上游未返回数据",
+                            failures,
+                            delay,
+                        )
+                    await asyncio.sleep(delay)
+
+                flv.next_connection()
+
+                attempts = 0
+                while True:
+                    url = await get_cached_url(room_id, force=True)
+                    if url:
+                        if failures == 0:
+                            logger.info(
+                                "房间=%s 开始重连 签名剩余=%s",
+                                room_id, _sig_left_text(url),
+                            )
+                        break
+                    attempts += 1
+                    if attempts % 12 == 1:
+                        logger.warning("房间=%s 无可用播放地址 正在重试", room_id)
+                    await asyncio.sleep(5)
+        finally:
+            logger.info(
+                "房间=%s 客户端断开 总时长=%s 总流量=%s",
+                room_id,
+                _fmt_duration(time.monotonic() - started),
+                _fmt_bytes(total_bytes),
+            )
 
     return StreamingResponse(stream(), media_type="video/x-flv", headers=headers)
 
@@ -736,4 +851,5 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    logger.info("服务启动 端口=%s 房间=%s", PORT, ROOM_IDS)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False)
