@@ -6,15 +6,16 @@ Bilibili Live FLV Proxy — Hugging Face Space
 
 import asyncio
 import time
-import threading
+import logging
 import urllib.request
 import urllib.parse
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse, Response
 import uvicorn
 
 PORT = int(os.environ.get("PORT", 7860))
@@ -22,6 +23,9 @@ _room_ids_env = os.environ.get("ROOM_IDS", os.environ.get("ROOM_ID", "27519423")
 ROOM_IDS = [int(x.strip()) for x in _room_ids_env.split(",") if x.strip()]
 DEFAULT_QN = int(os.environ.get("DEFAULT_QN", 80))
 CACHE_TTL = 3000  # 50 分钟
+CHUNK_SIZE = 65536
+MAX_TAG_SIZE = 16 * 1024 * 1024
+UPSTREAM_TIMEOUT = 30
 
 API_URL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
 HEADERS = {
@@ -32,8 +36,13 @@ HEADERS = {
     "Referer": "https://live.bilibili.com/",
 }
 
+logger = logging.getLogger("bili-proxy")
+logger.setLevel(logging.INFO)
+
 _cache = {}
-_cache_lock = threading.Lock()
+_url_locks = {}
+# 每次读取都会占用一个线程直到有数据返回，独立线程池避免和其他请求互相排队
+_io_executor = ThreadPoolExecutor(max_workers=64, thread_name_prefix="flv-io")
 
 app = FastAPI(title="Bilibili Live FLV Proxy")
 
@@ -69,24 +78,54 @@ def fetch_flv_url(room_id: int, qn: int = DEFAULT_QN) -> str | None:
     return None
 
 
-def get_cached_url(room_id: int) -> str | None:
-    now = time.time()
-    with _cache_lock:
-        entry = _cache.get(room_id)
-        if entry and entry["expires_at"] > now:
-            return entry["url"]
-
-    url = fetch_flv_url(room_id)
-    if url is None:
-        with _cache_lock:
-            stale = _cache.get(room_id)
-            if stale:
-                return stale["url"]
+def _parse_expires(url: str) -> float | None:
+    try:
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        value = (query.get("expires") or query.get("deadline") or [None])[0]
+        return float(value) if value else None
+    except (TypeError, ValueError):
         return None
 
-    with _cache_lock:
-        _cache[room_id] = {"url": url, "expires_at": now + CACHE_TTL}
-    return url
+
+async def get_cached_url(room_id: int, force: bool = False) -> str | None:
+    entry = _cache.get(room_id)
+    if not force and entry and entry["expires_at"] > time.time():
+        return entry["url"]
+
+    lock = _url_locks.setdefault(room_id, asyncio.Lock())
+    async with lock:
+        entry = _cache.get(room_id)
+        if entry:
+            # 10 秒内刚刷新过就直接复用，避免多个观众同时重连时重复请求 API
+            if time.time() - entry["fetched_at"] < 10:
+                return entry["url"]
+            if not force and entry["expires_at"] > time.time():
+                return entry["url"]
+
+        loop = asyncio.get_running_loop()
+        try:
+            url = await loop.run_in_executor(None, fetch_flv_url, room_id)
+        except Exception as exc:
+            logger.warning("room %s: fetch play url failed: %s", room_id, exc)
+            url = None
+
+        if url is None:
+            entry = _cache.get(room_id)
+            return entry["url"] if entry else None
+
+        now = time.time()
+        deadline = _parse_expires(url)
+        expires_at = now + CACHE_TTL
+        if deadline:
+            # 保证新连接拿到的签名至少还有 5 分钟有效期
+            expires_at = min(expires_at, deadline - 300)
+        _cache[room_id] = {
+            "url": url,
+            "expires_at": expires_at,
+            "fetched_at": now,
+            "deadline": deadline,
+        }
+        return url
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -538,41 +577,153 @@ async def index(request: Request):
 </html>"""
 
 
+def _open_upstream(url: str):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": "https://live.bilibili.com/",
+    })
+    return urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT)
+
+
+class FlvStream:
+    """把多次上游连接的 FLV 数据拼成一条连续流：后续连接去掉新的 FLV 头并接续时间戳。"""
+
+    def __init__(self):
+        self._last_ts = 0
+        self._emitted_header = False
+        self._passthrough = False
+        self._start_connection()
+
+    def next_connection(self):
+        self._start_connection()
+
+    def _start_connection(self):
+        self._buf = bytearray()
+        self._header_done = False
+        self._first = not self._emitted_header
+        self._offset = 0 if self._first else None
+
+    def feed(self, chunk: bytes) -> bytes:
+        if self._passthrough:
+            return chunk
+
+        self._buf.extend(chunk)
+        out = bytearray()
+
+        if not self._header_done:
+            if len(self._buf) < 3:
+                return b""
+            if self._buf[:3] != b"FLV":
+                self._passthrough = True
+                out.extend(self._buf)
+                self._buf.clear()
+                return bytes(out)
+            if len(self._buf) < 13:
+                return b""
+            if self._first:
+                out.extend(self._buf[:13])
+                self._emitted_header = True
+            del self._buf[:13]
+            self._header_done = True
+
+        while len(self._buf) >= 11:
+            size = int.from_bytes(self._buf[1:4], "big")
+            if size > MAX_TAG_SIZE:
+                logger.warning("bad FLV tag size %d, dropping buffered data", size)
+                self._buf.clear()
+                break
+            total = 11 + size + 4
+            if len(self._buf) < total:
+                break
+
+            tag_type = self._buf[0]
+            ts = int.from_bytes(self._buf[4:7], "big") | (self._buf[7] << 24)
+            if self._offset is None:
+                self._offset = self._last_ts + 1 - ts
+            new_ts = (ts + self._offset) & 0xFFFFFFFF
+
+            tag = bytearray(self._buf[:total])
+            tag[4:7] = (new_ts & 0xFFFFFF).to_bytes(3, "big")
+            tag[7] = new_ts >> 24
+            del self._buf[:total]
+
+            if not self._first and tag_type == 18:
+                continue
+            self._last_ts = new_ts
+            out.extend(tag)
+
+        return bytes(out)
+
+
 @app.get("/live/{room_id}.flv")
 @app.head("/live/{room_id}.flv")
-async def proxy_flv(room_id: int):
-    cdn_url = get_cached_url(room_id)
+async def proxy_flv(room_id: int, request: Request):
+    cdn_url = await get_cached_url(room_id)
     if cdn_url is None:
         return PlainTextResponse("Room offline or fetch failed", status_code=502)
 
+    headers = {
+        "Cache-Control": "no-cache",
+        "Access-Control-Allow-Origin": "*",
+    }
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers)
+
     async def stream():
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        url = cdn_url
+        flv = FlvStream()
+        failures = 0
 
-        def _fetch():
-            req = urllib.request.Request(cdn_url, headers={
-                "User-Agent": HEADERS["User-Agent"],
-                "Referer": "https://live.bilibili.com/",
-            })
-            return urllib.request.urlopen(req, timeout=30)
+        while True:
+            upstream = None
+            received = False
+            try:
+                upstream = await loop.run_in_executor(
+                    _io_executor, _open_upstream, url
+                )
+                while True:
+                    chunk = await loop.run_in_executor(
+                        _io_executor, upstream.read1, CHUNK_SIZE
+                    )
+                    if not chunk:
+                        break
+                    received = True
+                    data = flv.feed(chunk)
+                    if data:
+                        yield data
+            except Exception as exc:
+                logger.warning("room %s: upstream error: %s", room_id, exc)
+            finally:
+                if upstream is not None:
+                    try:
+                        upstream.close()
+                    except Exception:
+                        pass
 
-        try:
-            upstream = await loop.run_in_executor(None, _fetch)
+            # 上游结束或失败后刷新签名重连，对播放器保持同一个 HTTP 响应不中断
+            if received:
+                failures = 0
+                logger.info("room %s: upstream closed, reconnecting", room_id)
+                await asyncio.sleep(0.5)
+            else:
+                failures += 1
+                logger.warning("room %s: upstream unavailable (attempt %d)", room_id, failures)
+                await asyncio.sleep(min(2 ** failures, 15))
+
+            flv.next_connection()
+
+            attempts = 0
             while True:
-                chunk = await loop.run_in_executor(None, upstream.read, 65536)
-                if not chunk:
+                url = await get_cached_url(room_id, force=True)
+                if url:
                     break
-                yield chunk
-        except Exception:
-            pass
+                attempts += 1
+                if attempts % 12 == 1:
+                    logger.warning("room %s: no playable stream, retrying", room_id)
+                await asyncio.sleep(5)
 
-    return StreamingResponse(
-        stream(),
-        media_type="video/x-flv",
-        headers={
-            "Cache-Control": "no-cache",
-            "Access-Control-Allow-Origin": "*",
-        },
-    )
+    return StreamingResponse(stream(), media_type="video/x-flv", headers=headers)
 
 
 @app.get("/health")
@@ -581,4 +732,8 @@ async def health():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     uvicorn.run(app, host="0.0.0.0", port=PORT)
