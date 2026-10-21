@@ -19,7 +19,7 @@ Bilibili 直播流 FLV URL 带有 CDN 签名 (`sign`/`upsig`)，有效期约 60 
 https://your-space.hf.space/live/27519423.flv
 ```
 
-把此链接填入 Lofi-Radio、VLC、PotPlayer 等任意播放器即可。
+把此链接填入 Lofi-Radio、VLC、PotPlayer 等任意播放器即可。推荐搭配 [Lofi-Radio_flutter](https://github.com/WEP-56/Lofi-Radio_flutter) 使用。
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
