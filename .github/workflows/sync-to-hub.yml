@@ -21,7 +21,8 @@ jobs:
       - uses: huggingface/hub-sync@v0.3.0
         with:
           github_repo_id: ${{ github.repository }}
-          huggingface_repo_id: 0xSherlock/bili-live-flv-proxy
+          # 目标 Space 的仓库 ID 通过 secret 传入，避免在公开仓库和日志中暴露账号
+          huggingface_repo_id: ${{ secrets.HF_SPACE_REPO }}
           hf_token: ${{ secrets.HF_TOKEN }}
           repo_type: space
           space_sdk: docker
