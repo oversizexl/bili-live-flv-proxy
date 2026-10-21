@@ -1,0 +1,34 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app.py
+      - Dockerfile
+      - requirements.txt
+      - .github/workflows/sync-to-hub.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: huggingface/hub-sync@v0.3.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: 0xSherlock/bili-live-flv-proxy
+          hf_token: ${{ secrets.HF_TOKEN }}
+          repo_type: space
+          space_sdk: docker
+          # 只同步部署文件；Space 的 README.md 是构建配置来源，不能被 GitHub README 覆盖
+          include: |
+            app.py
+            Dockerfile
+            requirements.txt
+          # include 过滤掉的文件在 true 时会被从 Hub 删除，必须关闭
+          delete_removed: false
