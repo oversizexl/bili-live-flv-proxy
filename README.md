@@ -67,9 +67,18 @@ services:
 
 ### Hugging Face
 
-1. Fork 本仓库
-2. 在 HF 创建 Space，选 Docker SDK，关联仓库
-3. 构建完成后即可使用
+在线地址：https://huggingface.co/spaces/0xSherlock/bili-live-flv-proxy
+
+推送到 GitHub `main` 后，GitHub Actions 会自动把部署文件同步到 Space：
+
+- 工作流：`.github/workflows/sync-to-hub.yml`，来源仓库为 `oversizexl/bili-live-flv-proxy`，目标 Space 为 `0xSherlock/bili-live-flv-proxy`
+- 只同步 `app.py`、`Dockerfile`、`requirements.txt`
+- 需要在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置 `HF_TOKEN`（Hugging Face 写权限 token）
+- 也可以在 GitHub Actions 页面手动触发 `Sync to Hugging Face Space`
+
+Space 的 `README.md` 是构建配置来源（包含 `sdk: docker`），因此工作流使用 `include` 白名单并设置 `delete_removed: false`，不会用本仓库的 README 覆盖它。
+
+同步会触发 Space 重新构建，正在播放的连接会短暂中断，播放器会自动重连。
 
 ### 本地运行
 
