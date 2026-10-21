@@ -74,7 +74,7 @@ services:
 - 需要在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
   - `HF_TOKEN`（Secret）：Hugging Face 写权限 token
   - `HF_SPACE_REPO`（Variable）：目标 Space 的仓库 ID，格式为 `<用户名>/<Space 名>`
-- 也可以在 GitHub Actions 页面手动触发 `同步到 Hugging Face Space`
+- 也可以在 GitHub Actions 页面手动触发 `Sync to Hugging Face Space`
 
 工作流只上传 `app.py`、`Dockerfile`、`requirements.txt`，不会上传或删除 Space 的 `README.md`（它是构建配置来源，包含 `sdk: docker`）。
 
