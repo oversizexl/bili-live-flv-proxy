@@ -72,11 +72,11 @@ services:
 - 工作流：`.github/workflows/sync-to-hub.yml`
 - 只同步 `app.py`、`Dockerfile`、`requirements.txt`
 - 需要在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
-  - `HF_TOKEN`：Hugging Face 写权限 token
-  - `HF_SPACE_REPO`：目标 Space 的仓库 ID，格式为 `<用户名>/<Space 名>`
-- 也可以在 GitHub Actions 页面手动触发 `Sync to Hugging Face Space`
+  - `HF_TOKEN`（Secret）：Hugging Face 写权限 token
+  - `HF_SPACE_REPO`（Variable）：目标 Space 的仓库 ID，格式为 `<用户名>/<Space 名>`
+- 也可以在 GitHub Actions 页面手动触发 `同步到 Hugging Face Space`
 
-Space 的 `README.md` 是构建配置来源（包含 `sdk: docker`），因此工作流使用 `include` 白名单并设置 `delete_removed: false`，不会用本仓库的 README 覆盖它。
+工作流只上传 `app.py`、`Dockerfile`、`requirements.txt`，不会上传或删除 Space 的 `README.md`（它是构建配置来源，包含 `sdk: docker`）。
 
 同步会触发 Space 重新构建，正在播放的连接会短暂中断，播放器会自动重连。
 

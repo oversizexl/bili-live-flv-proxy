@@ -1,4 +1,4 @@
-name: Sync to Hugging Face Space
+name: 同步到 Hugging Face Space
 
 on:
   push:
@@ -17,19 +17,54 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: huggingface/hub-sync@v0.3.0
-        with:
-          github_repo_id: ${{ github.repository }}
-          # 目标 Space 的仓库 ID 通过 secret 传入，避免在公开仓库和日志中暴露账号
-          huggingface_repo_id: ${{ secrets.HF_SPACE_REPO }}
-          hf_token: ${{ secrets.HF_TOKEN }}
-          repo_type: space
-          space_sdk: docker
-          # 只同步部署文件；Space 的 README.md 是构建配置来源，不能被 GitHub README 覆盖
-          include: |
-            app.py
-            Dockerfile
-            requirements.txt
-          # include 过滤掉的文件在 true 时会被从 Hub 删除，必须关闭
-          delete_removed: false
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 安装 Hugging Face CLI
+        run: |
+          if ! { curl -LsSf https://hf.co/cli/install.sh | bash; } > /tmp/hf-install.log 2>&1; then
+            echo "Hugging Face CLI 安装失败："
+            cat /tmp/hf-install.log
+            exit 1
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "Hugging Face CLI 安装完成"
+
+      - name: 上传部署文件
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${HF_SPACE_REPO:-}" ]; then
+            echo "错误：未设置仓库变量 HF_SPACE_REPO"
+            exit 1
+          fi
+
+          echo "目标 Space：${HF_SPACE_REPO}"
+          echo "同步文件：app.py、Dockerfile、requirements.txt"
+
+          SPACE_URL="https://huggingface.co/spaces/${HF_SPACE_REPO}"
+          BEFORE=$(git ls-remote "${SPACE_URL}" refs/heads/main 2>/dev/null | cut -f1 || true)
+
+          # 只上传部署文件，不加 --delete，Space 的 README.md 不会被上传或删除
+          if ! OUTPUT=$(hf upload "${HF_SPACE_REPO}" . --type space \
+              --exclude=".git*" --exclude="*/.git/" --exclude="*/.github/" \
+              --include="app.py" --include="Dockerfile" --include="requirements.txt" \
+              --commit-message "从 GitHub 同步 ${GITHUB_SHA::7}" 2>&1); then
+            echo "同步失败，错误信息如下："
+            echo "${OUTPUT}"
+            exit 1
+          fi
+
+          AFTER=$(git ls-remote "${SPACE_URL}" refs/heads/main 2>/dev/null | cut -f1 || true)
+
+          if echo "${OUTPUT}" | grep -qi "no files have been modified" \
+              || { [ -n "${BEFORE}" ] && [ -n "${AFTER}" ] && [ "${BEFORE}" = "${AFTER}" ]; }; then
+            echo "同步完成：文件没有变化，Space 无需重新构建"
+          elif [ -n "${AFTER}" ]; then
+            echo "同步完成：已生成新提交 ${AFTER:0:7}，Space 将自动重新构建"
+          else
+            echo "同步完成：已上传变更，Space 将自动重新构建"
+          fi
